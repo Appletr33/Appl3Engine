@@ -1,6 +1,7 @@
 package org.example;
 
 import org.example.utils.Loader;
+import org.joml.Vector2f;
 import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL13;
 import org.lwjgl.stb.STBImage;
@@ -110,5 +111,19 @@ public class TextureAtlas
     public float getTextureSizeY()
     {
         return textureSizeY;
+    }
+
+    public Vector2f getTextureOffset(int index)
+    {
+        int atlasWidth = width / stride;
+        int atlasHeight = height / stride;
+
+        int column = index % atlasWidth;
+        int row = index / atlasWidth;
+
+        float textureOffsetX = column * textureSizeX;
+        float textureOffsetY = (atlasHeight - row - 1) * textureSizeY;  // Y flipped (OpenGL flips Y)
+
+        return new Vector2f(textureOffsetX, textureOffsetY);
     }
 }

@@ -2,6 +2,7 @@ package org.example;
 
 import org.example.utils.Loader;
 import org.joml.Matrix4f;
+import org.joml.Vector2f;
 import org.joml.Vector3f;
 import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL30;
@@ -192,11 +193,16 @@ public class ParticleRenderer
         }
 
         // select texture
-        int atlasHeight = 8;
-        float textureOffsetX = 7 * textureAtlas.getTextureSizeX();
-        float textureOffsetY = (atlasHeight - 0 - 1) * textureAtlas.getTextureSizeY(); // Subtract 1 twice: once to convert to 0-based index, and once more to flip
+        long timeInMs = System.currentTimeMillis();
+        double timeInSeconds = timeInMs / 100.0;
+        double sinValue = Math.sin(timeInSeconds);
+        int min = 0;
+        int max = 16;
+        int sineWaveRange = (int) ((sinValue + 1) / 2 * (max - min) + min);
 
-        glUniform2f(textureOffsetLocation, textureOffsetX, textureOffsetY);
+        Vector2f textOff = textureAtlas.getTextureOffset(sineWaveRange);
+        // upload texture choice
+        glUniform2f(textureOffsetLocation, textOff.x, textOff.y);
         glUniform1i(instanceSizePerQuadLocation, instanceSize);
 
 
