@@ -42,17 +42,28 @@ public class WindowManager
     {
         GLFWErrorCallback.createPrint(System.err).set();
 
-        if (!GLFW.glfwInit())
-        {
+        System.out.println("Initializing GLFW...");
+        if (!GLFW.glfwInit()) {
             throw new IllegalStateException("Unable to initialize GLFW");
         }
+        System.out.println("GLFW initialized successfully");
+
         GLFW.glfwDefaultWindowHints();
         GLFW.glfwWindowHint(GLFW.GLFW_VISIBLE, GL11.GL_FALSE);
         GLFW.glfwWindowHint(GLFW.GLFW_RESIZABLE, GL11.GL_TRUE);
-        GLFW.glfwWindowHint(GLFW.GLFW_CONTEXT_VERSION_MAJOR, 3);
-        GLFW.glfwWindowHint(GLFW.GLFW_CONTEXT_VERSION_MINOR, 2);
+        GLFW.glfwWindowHint(GLFW.GLFW_CONTEXT_VERSION_MAJOR, 4);
+        GLFW.glfwWindowHint(GLFW.GLFW_CONTEXT_VERSION_MINOR, 5);
         GLFW.glfwWindowHint(GLFW.GLFW_OPENGL_PROFILE, GLFW.GLFW_OPENGL_CORE_PROFILE);
         GLFW.glfwWindowHint(GLFW.GLFW_OPENGL_FORWARD_COMPAT, GL11.GL_TRUE);
+
+        // Check if the operating system is macOS
+        if (System.getProperty("os.name").toLowerCase().contains("mac")) {
+            System.out.println("Running Mac Configurations");
+            GLFW.glfwWindowHint(GLFW.GLFW_OPENGL_FORWARD_COMPAT, GL11.GL_TRUE); // macOS-specific
+            GLFW.glfwWindowHint(GLFW.GLFW_COCOA_RETINA_FRAMEBUFFER, GLFW.GLFW_FALSE); // macOS-specific
+            GLFW.glfwWindowHint(GLFW.GLFW_OPENGL_DEBUG_CONTEXT, GLFW.GLFW_TRUE); // For debugging
+        }
+
 
         boolean maximized = false;
         if (width == 0 || height == 0)
@@ -62,7 +73,6 @@ public class WindowManager
             GLFW.glfwWindowHint(GLFW.GLFW_MAXIMIZED, GLFW.GLFW_TRUE);
             maximized = true;
         }
-
         window = GLFW.glfwCreateWindow(width, height, title, MemoryUtil.NULL, MemoryUtil.NULL);
         if (window == MemoryUtil.NULL)
             throw new RuntimeException("Failed to create window");
@@ -89,7 +99,6 @@ public class WindowManager
            }
 
         });
-
         if (maximized)
         {
             GLFW.glfwMaximizeWindow(window);
@@ -108,6 +117,7 @@ public class WindowManager
 
 
         GLFW.glfwShowWindow(window);
+        GLFW.glfwFocusWindow(window);
 
         GL.createCapabilities();
 
@@ -140,6 +150,12 @@ public class WindowManager
         });
 
         updateProjectMatrix();
+
+        if (!GL.getCapabilities().OpenGL33) {
+            throw new IllegalStateException("OpenGL 3.3 is required but not supported on this system.");
+        }
+
+        System.out.println("Window Initialized!");
     }
 
     public void update()

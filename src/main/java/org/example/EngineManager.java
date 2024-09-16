@@ -34,7 +34,6 @@ public class EngineManager {
     private void init() throws Exception
     {
         engineManager = this;
-        GLFW.glfwSetErrorCallback(errorCallback = GLFWErrorCallback.createPrint(System.err));
         window = Main.getWindow();
         window.init();
         enableDebugOutput();
@@ -56,20 +55,22 @@ public class EngineManager {
     }
 
     public static void setupCustomDebugMessageCallback() {
-        GL43.glDebugMessageCallback((source, type, id, severity, length, message, userParam) -> {
-            String msg = MemoryUtil.memUTF8(message, length);
+        if (GL.getCapabilities().OpenGL43) {
+            GL43.glDebugMessageCallback((source, type, id, severity, length, message, userParam) -> {
+                String msg = MemoryUtil.memUTF8(message, length);
 
-            // Log the message based on severity
-            if (severity == GL43.GL_DEBUG_SEVERITY_HIGH) {
-                System.err.println("[OpenGL HIGH] " + msg);
-            } else if (severity == GL43.GL_DEBUG_SEVERITY_MEDIUM) {
-                System.err.println("[OpenGL MEDIUM] " + msg);
-            } else if (severity == GL43.GL_DEBUG_SEVERITY_LOW) {
-                System.out.println("[OpenGL LOW] " + msg);
-            } else {
-                System.out.println("[OpenGL NOTIFICATION] " + msg);
-            }
-        }, 0);
+                // Log the message based on severity
+                if (severity == GL43.GL_DEBUG_SEVERITY_HIGH) {
+                    System.err.println("[OpenGL HIGH] " + msg);
+                } else if (severity == GL43.GL_DEBUG_SEVERITY_MEDIUM) {
+                    System.err.println("[OpenGL MEDIUM] " + msg);
+                } else if (severity == GL43.GL_DEBUG_SEVERITY_LOW) {
+                    System.out.println("[OpenGL LOW] " + msg);
+                } else {
+                    System.out.println("[OpenGL NOTIFICATION] " + msg);
+                }
+            }, 0);
+        }
     }
 
     private void enableDebugOutput() {
