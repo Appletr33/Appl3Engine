@@ -99,8 +99,8 @@ public class EngineManager {
 
         //Create a demo particle system
         ParticleSystem system = new ParticleSystem();
-        //system.initializeSquare(100);
-        system.initializeGrid(200);
+        system.initializeSquare(100);
+        //system.initializeGrid(100);
 
         while (isRunning)
         {
