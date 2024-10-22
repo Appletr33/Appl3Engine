@@ -4,26 +4,41 @@ import org.example.utils.Loader;
 import org.joml.Matrix4f;
 import org.joml.Vector2f;
 import org.joml.Vector3f;
-import org.lwjgl.opengl.GL11;
-import org.lwjgl.opengl.GL30;
-import org.lwjgl.opengl.GL43;
-import org.lwjgl.opengl.GL45;
+import org.joml.Vector4f;
+import org.lwjgl.BufferUtils;
+import org.lwjgl.opengl.*;
 import org.lwjgl.system.MemoryStack;
 import static org.lwjgl.opengl.GL30.*;
 import org.lwjgl.system.MemoryUtil;
+
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
 import java.nio.IntBuffer;
 
+
 public class ParticleRenderer
 {
+    int GROUP_SIZE = 128;
+
     ShaderManager shader;
-    ShaderManager computeShader;
-    Particle[] particles;
+    ShaderManager initializationShader;
+    ShaderManager emissionShader;
+    ShaderManager simulationShader;
+
+    // ComputeParametersBuffer (UBO)
+    private int computeParametersBuffer;
+    // ParticleBuffer (SSBO)
+    private int particleBuffer;
+    // EmitterBuffer (SSBO)
+    private int emitterBuffer;
+    // ParticleIndices (Allocator Buffer) (SSBO)
+    private int particleIndicesBuffer;
+    // ComputeStateBuffer (SSBO)
+    private int computeStateBuffer;
 
     private int vaoId;
-    private int ssboParticlesId;
     private int viewProjLocation;
-    private int paddedParticleCount;
     private TextureAtlas textureAtlas;
     private int textureOffsetLocation;
     private int instanceSizePerQuadLocation;
@@ -32,31 +47,68 @@ public class ParticleRenderer
 
     private int eboId;
     int instanceSize = 32;
-    private int indexCount;
     float quadHalfSize = 0.5f;
 
-    public ParticleRenderer(Particle[] particles) throws Exception
+    // ComputeParameters structure
+    class ComputeParameters {
+        int MAX_PARTICLES;
+        int MAX_EMITTERS;
+        int num_emitters;
+        float dt;
+    }
+
+    // Particle structure
+    class Particle {
+        Vector4f pos;          // xyz for position, w for padding or other use
+        Vector4f vel;          // xyz for velocity, w for padding or other use
+        Vector4f lifeScaleTexture; // life, scale, texture, padding
+    }
+
+    class Emitter {
+        Vector4f pos;          // xyz for position, w for padding or other use
+        Vector4f vel;          // xyz for velocity, w for padding or other use
+        Vector4f lifeTypeScale; // life, scale, texture, padding
+    }
+
+    // ComputeState structure
+    class ComputeState {
+        int num_particles;
+        int NEW_PARTICLES;
+        int pad;
+        int padd;
+    }
+
+    ComputeParameters computeParams;
+
+    public ParticleRenderer() throws Exception
     {
-        Renderer.renderer.renderables.add(this::render);
+        //Renderer.renderer.renderables.add(this::render);
         Renderer.renderer.cleanupCalls.add(this::cleanup);
-        this.particles = particles;
+
+
+        // Initialize Shaders
         shader = new ShaderManager();
-        computeShader = new ShaderManager();
-        try {
-            shader.createVertexShader(Loader.loadShader("/shaders/vertex.glsl"));
-            shader.createFragmentShader(Loader.loadShader("/shaders/fragment.glsl"));
-            shader.link();
+        initializationShader = new ShaderManager();
+        emissionShader = new ShaderManager();
+        simulationShader = new ShaderManager();
 
-            computeShader.createComputeShader(Loader.loadShader("/shaders/particle_comp.glsl"));
-            computeShader.link();
+        shader.createVertexShader(Loader.loadShader("/shaders/vertex.glsl"));
+        shader.createFragmentShader(Loader.loadShader("/shaders/fragment.glsl"));
+        shader.link();
 
-        } catch (Exception e)
-        {
-            e.printStackTrace();
-            System.exit(-1);
-        }
+        // SETUP BUFFERS
+        initializationShader.createComputeShader(Loader.loadShader("/shaders/particle_emit.glsl"));
+        initializationShader.link();
 
+        // COMPUTE EMISSION
+        emissionShader.createComputeShader(Loader.loadShader("/shaders/particle_init.glsl"));
+        emissionShader.link();
 
+        // SIMULATION
+        simulationShader.createComputeShader(Loader.loadShader("/shaders/particle_simulate.glsl"));
+        simulationShader.link();
+
+        // VERTEX UNIFORMS
         instanceSizePerQuadLocation = shader.getUniformLocation("instanceSize");
         int textureAtlasUniformLocation = shader.getUniformLocation("atlasHandle");
         int textureSizeLocation = shader.getUniformLocation("textureSize");
@@ -105,7 +157,6 @@ public class ParticleRenderer
         indicesBuffer.put(indices);
         indicesBuffer.flip();
         glBufferData(GL_ELEMENT_ARRAY_BUFFER, indicesBuffer, GL_STATIC_DRAW);
-        indexCount = indices.length;
 
         // Don't forget to bind your VAO and associate the EBO with it
         glBindVertexArray(vaoId);
@@ -113,59 +164,173 @@ public class ParticleRenderer
         glBindVertexArray(0);
 
 
-        paddedParticleCount = particles.length + computeShader.WORKGROUP_SIZE - (particles.length % computeShader.WORKGROUP_SIZE);
-        System.out.println("Padded Particle Count " + paddedParticleCount);
+        // INITIALIZE PARTICLE SYSTEM COMPUTE SHADERS
+        computeParametersBuffer = GL15.glGenBuffers();
+        particleBuffer = GL15.glGenBuffers();
+        emitterBuffer = GL15.glGenBuffers();
+        particleIndicesBuffer = GL15.glGenBuffers();
+        computeStateBuffer = GL15.glGenBuffers();
 
-        // SSBO PREP PARTICLE DATA
-        int particleBufferSize = paddedParticleCount * 3; // three float per position
-        System.out.println("particleBufferSize : " + particleBufferSize);
-        FloatBuffer particleBuffer = MemoryUtil.memAllocFloat(particleBufferSize);
+        // INITIALIZE COMPUTE PARAMETERS
+        computeParams = new ComputeParameters();
+        computeParams.MAX_PARTICLES = 16384;
+        computeParams.MAX_EMITTERS = 1;
+        computeParams.dt = 0.0f;
+        computeParams.num_emitters = 0;
 
-        for (int i = 0; i < paddedParticleCount; i++)
-        {
-            if (i < particles.length)
-            {
-                particleBuffer.put(particles[i].x);
-                particleBuffer.put(particles[i].y);
-                particleBuffer.put(particles[i].z);
-            }
-            else
-            {
-                particleBuffer.put(0);
-                particleBuffer.put(0);
-                particleBuffer.put(0);
-            }
-        }
+        ByteBuffer cpBuffer = BufferUtils.createByteBuffer(16);
+        cpBuffer.order(ByteOrder.nativeOrder());
+        cpBuffer.putInt(computeParams.MAX_PARTICLES);
+        cpBuffer.putInt(computeParams.MAX_EMITTERS);
+        cpBuffer.putInt(computeParams.num_emitters);
+        cpBuffer.putFloat(computeParams.dt);
+        cpBuffer.flip();
 
-        particleBuffer.flip();
+        // Upload to the uniform buffer
+        GL43.glBindBuffer(GL43.GL_UNIFORM_BUFFER, computeParametersBuffer);
+        GL43.glBufferSubData(GL43.GL_UNIFORM_BUFFER, 0, cpBuffer);
+        GL43.glBindBuffer(GL43.GL_UNIFORM_BUFFER, 0);
 
-        // Prepare Particle Buffer
-        ssboParticlesId = glGenBuffers();
-        glBindBuffer(GL43.GL_SHADER_STORAGE_BUFFER, ssboParticlesId);
-        GL30.glBufferData(GL43.GL_SHADER_STORAGE_BUFFER, particleBuffer, GL30.GL_DYNAMIC_COPY);
-        GL30.glBindBufferBase(GL43.GL_SHADER_STORAGE_BUFFER, 0, ssboParticlesId);
 
-        //clean up
-        MemoryUtil.memFree(particleBuffer);
-        glBindBuffer(GL43.GL_SHADER_STORAGE_BUFFER, 0);
+       /* // INITIALIZE PARTICLE BUFFER
+        int maxParticles = computeParams.MAX_PARTICLES;
+        int particleStructSize = 48; // 48 bytes per particle
 
-        System.out.println("Workgroup size: " + paddedParticleCount / computeShader.WORKGROUP_SIZE);
+        // [TODO] save and load particles here
+
+        GL15.glBindBuffer(GL43.GL_SHADER_STORAGE_BUFFER, particleBuffer);
+        GL15.glBufferData(GL43.GL_SHADER_STORAGE_BUFFER, (long) maxParticles * particleStructSize, GL15.GL_DYNAMIC_DRAW);
+        GL15.glBindBuffer(GL43.GL_SHADER_STORAGE_BUFFER, 0);
+
+
+        // INITIALIZE PARTICLE INDICES (Allocator Buffer)
+
+        GL15.glBindBuffer(GL43.GL_SHADER_STORAGE_BUFFER, particleIndicesBuffer);
+        GL15.glBufferData(GL43.GL_SHADER_STORAGE_BUFFER, (long)maxParticles * 4, GL15.GL_DYNAMIC_DRAW); //* 4 -> unsigned int
+        GL15.glBindBuffer(GL43.GL_SHADER_STORAGE_BUFFER, 0);
+
+
+
+        // INITIALIZE EMITTER BUFFER
+        int maxEmitters = computeParams.MAX_EMITTERS;
+        int emitterStructSize = 48; // 48 bytes per particle
+
+        // [TODO] save and load particles here
+
+        GL15.glBindBuffer(GL43.GL_SHADER_STORAGE_BUFFER, emitterBuffer);
+        GL15.glBufferData(GL43.GL_SHADER_STORAGE_BUFFER, (long) maxEmitters * emitterStructSize, GL15.GL_DYNAMIC_DRAW);
+        GL15.glBindBuffer(GL43.GL_SHADER_STORAGE_BUFFER, 0);
+
+
+        // INITIALIZE COMPUTE STATE BUFFER
+        ComputeState computeState = new ComputeState();
+        computeState.num_particles = 0;
+        computeState.NEW_PARTICLES = 0;
+
+        IntBuffer computeStateData = BufferUtils.createIntBuffer(4);
+        computeStateData.put(new int[]{computeState.num_particles, computeState.NEW_PARTICLES, 0, 0});
+        computeStateData.flip();
+
+        GL15.glBindBuffer(GL43.GL_SHADER_STORAGE_BUFFER, computeStateBuffer);
+        GL15.glBufferData(GL43.GL_SHADER_STORAGE_BUFFER, computeStateData, GL15.GL_DYNAMIC_DRAW);
+        GL15.glBindBuffer(GL43.GL_SHADER_STORAGE_BUFFER, 0);
+
+        // Initialize Buffers on GPU
+        initializationShader.bind();
+
+        GL30.glBindBufferBase(GL43.GL_UNIFORM_BUFFER, 0, computeParametersBuffer);
+        GL30.glBindBufferBase(GL43.GL_SHADER_STORAGE_BUFFER, 3, particleIndicesBuffer);
+
+        GL43.glDispatchCompute(computeParams.MAX_PARTICLES / GROUP_SIZE, 1, 1);
+        GL43.glMemoryBarrier(GL43.GL_SHADER_STORAGE_BARRIER_BIT);
+
+        initializationShader.unbind();*/
     }
 
     public void render()
     {
-        // COMPUTE VERTEX POSITIONS
-       /* computeShader.bind();
 
-        GL43.glDispatchCompute(paddedParticleCount / 256, 1, 1);
+        // UPDATE EMITTERS ON CPU
+
+        Emitter[] emitters = new Emitter[computeParams.MAX_EMITTERS];
+        for (int i = 0; i < computeParams.MAX_EMITTERS; i++) {
+            Emitter e = new Emitter();
+            e.pos = new Vector4f(0f);
+            e.vel = new Vector4f(0f);
+            e.lifeTypeScale = new Vector4f(100.0f, 1.0f, 1.0f, 1.0f);
+            emitters[i] = e;
+        }
+
+
+        // UPDATE COMPUTE PARAMETERS
+        computeParams.dt = EngineManager.getDeltaTime();
+        computeParams.num_emitters = 1;
+
+
+        GL30.glBindBufferBase(GL43.GL_UNIFORM_BUFFER, 0, computeParametersBuffer);
+        GL30.glBindBufferBase(GL43.GL_SHADER_STORAGE_BUFFER, 1, computeStateBuffer);
+        GL30.glBindBufferBase(GL43.GL_SHADER_STORAGE_BUFFER, 2, particleBuffer);
+        GL30.glBindBufferBase(GL43.GL_SHADER_STORAGE_BUFFER, 3, particleIndicesBuffer);
+        GL30.glBindBufferBase(GL43.GL_SHADER_STORAGE_BUFFER, 4, emitterBuffer); // uploaded each frame [TODO] NOT DO THAT IMPLEMENT EMITTERS ON GPU?
+
+
+/*        // Create a ByteBuffer with std140 layout (16 bytes for ComputeParameters)
+        ByteBuffer cpBuffer = BufferUtils.createByteBuffer(16);
+        cpBuffer.order(ByteOrder.nativeOrder());
+        cpBuffer.putInt(computeParams.MAX_PARTICLES);
+        cpBuffer.putInt(computeParams.MAX_EMITTERS);
+        cpBuffer.putInt(computeParams.num_emitters);
+        cpBuffer.putFloat(computeParams.dt);
+        cpBuffer.flip();
+
+        GL43.glBindBuffer(GL43.GL_UNIFORM_BUFFER, computeParametersBuffer);
+        GL43.glBufferSubData(GL43.GL_UNIFORM_BUFFER, 0, cpBuffer);
+        GL43.glBindBuffer(GL43.GL_UNIFORM_BUFFER, 0);
+
+
+        int emitterSize = 16 * 3; // 3 vec4s per emitter
+        ByteBuffer emitterBufferData = BufferUtils.createByteBuffer(computeParams.MAX_EMITTERS * emitterSize);
+        emitterBufferData.order(ByteOrder.nativeOrder());
+
+        for (Emitter e : emitters) {
+            emitterBufferData.putFloat(e.pos.x).putFloat(e.pos.y).putFloat(e.pos.z).putFloat(e.pos.w);
+            // vel
+            emitterBufferData.putFloat(e.vel.x).putFloat(e.vel.y).putFloat(e.vel.z).putFloat(e.vel.w);
+            // lifeTypeScale
+            emitterBufferData.putFloat(e.lifeTypeScale.x).putFloat(e.lifeTypeScale.y)
+                    .putFloat(e.lifeTypeScale.z).putFloat(e.lifeTypeScale.w);
+
+        } emitterBufferData.flip();
+
+        // Upload to the SSBO
+        GL43.glBindBuffer(GL43.GL_SHADER_STORAGE_BUFFER, emitterBuffer);
+        GL43.glBufferSubData(GL43.GL_SHADER_STORAGE_BUFFER, 0, emitterBufferData);
+        GL43.glBindBuffer(GL43.GL_SHADER_STORAGE_BUFFER, 0);
+
+        emissionShader.bind();
+        GL43.glDispatchCompute((int)Math.ceil(1.0 / GROUP_SIZE) , 1, 1); // only 1 emitter hardcoded currently
         GL43.glMemoryBarrier(GL43.GL_SHADER_STORAGE_BARRIER_BIT);
+        emissionShader.unbind();
 
-        computeShader.unbind();*/
+
+        simulationShader.bind();
+        GL43.glDispatchCompute(computeParams.MAX_PARTICLES / GROUP_SIZE, 1, 1);
+        GL43.glMemoryBarrier(GL43.GL_SHADER_STORAGE_BARRIER_BIT);
+        simulationShader.unbind();*/
+
+
+
+        // UPLOAD EMITTERS TO GPU
+
+        // EMIT PARTICLES
+
+        // UPDATE PARTICLES
+
+        // RASTERIZE PARTICLES
 
 
         glDepthMask(false);
 
-        // RASTERIZE
         shader.bind();
         glBindVertexArray(vaoId); // Empty dummy VAO
         GL45.glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, eboId);
@@ -207,8 +372,8 @@ public class ParticleRenderer
 
 
         // BIND PARTICLE POSITIONS
-        GL30.glBindBufferBase(GL43.GL_SHADER_STORAGE_BUFFER, 0, ssboParticlesId);
-        GL45.glDrawElementsInstanced(GL_TRIANGLES, instanceSize * 6, GL_UNSIGNED_INT, 0, paddedParticleCount / instanceSize);
+        GL30.glBindBufferBase(GL43.GL_SHADER_STORAGE_BUFFER, 2, particleBuffer);
+        GL45.glDrawElementsInstanced(GL_TRIANGLES, instanceSize * 6, GL_UNSIGNED_INT, 0, computeParams.MAX_PARTICLES / instanceSize);
 
         glBindVertexArray(0);
 
@@ -219,9 +384,21 @@ public class ParticleRenderer
     public void cleanup()
     {
         shader.cleanup();
-        computeShader.cleanup();
-        GL30.glDeleteBuffers(ssboParticlesId);
+        initializationShader.cleanup();
+        emissionShader.cleanup();
+        simulationShader.cleanup();
+
+        GL30.glDeleteBuffers(particleBuffer);
+        GL30.glDeleteBuffers(particleIndicesBuffer);
+        GL30.glDeleteBuffers(computeStateBuffer);
+        GL30.glDeleteBuffers(computeParametersBuffer);
+        GL30.glDeleteBuffers(emitterBuffer);
+
         glDeleteVertexArrays(vaoId);
+        GL30.glDeleteBuffers(eboId);
     }
 
+    private int ceilDiv(int x, int y) {
+        return (x + y - 1) / y;
+    }
 }

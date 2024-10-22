@@ -24,7 +24,6 @@ public class EngineManager {
     private WindowManager window;
     private Renderer renderer;
     private Camera camera;
-    private GLFWErrorCallback errorCallback;
     private Callback GLDebugCallback;
     private int framesRendered = 0;
     private float timeRunning = 0.0f;
@@ -100,8 +99,7 @@ public class EngineManager {
 
         //Create a demo particle system
         ParticleSystem system = new ParticleSystem();
-        system.initializeSquare(100);
-        //system.initializeGrid(100);
+        system.initializeRenderer();
 
         while (isRunning)
         {
@@ -161,7 +159,6 @@ public class EngineManager {
     {
         renderer.cleanup();
         window.cleanup();
-        errorCallback.free();
         if (GLDebugCallback != null) {
             GLDebugCallback.free();
         }
